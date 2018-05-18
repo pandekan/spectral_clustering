@@ -46,10 +46,21 @@ def get_affinity(data, **kwargs):
     else:
         sigma = np.array([sigma_in]*n)
 
-    affinity = np.zeros((n, n))
+    if n <= 10000:
+        sigma_ij = np.outer(sigma, sigma.transpose())
+        scaled_dist = -dist_matrix*dist_matrix/sigma_ij
+        scaled_dist[np.where(np.isnan(scaled_dist))] = 0.
+        affinity = np.exp(scaled_dist)
+    else:
+        affinity = np.zeros((n, n))
+        for i in range(n):
+            sigma_ij = sigma[i]*sigma[:]
+            scaled_dist = -dist_matrix[i,:]**2/sigma_ij[:]
+            scaled_dist[np.where(np.isnan(scaled_dist))] = 0.
+            affinity[i, :] = np.exp(scaled_dist)
+
     for i in range(n):
-        sij = sigma[i]*sigma[:]
-        affinity[i, :] = np.exp(-(dist_matrix[i, :]**2/sij[:]))
+        affinity[i,i] = 0.
 
     return affinity
 
