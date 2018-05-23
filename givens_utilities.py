@@ -145,7 +145,7 @@ def cost_func(theta, *args):
         Ak = get_Ak(X, k_ij, theta, k, C)
         ZAk = Z*Ak
         for i in range(n):
-            Mik = ZAk[i, mi[i]]
+            Mik = Ak[i, mi[i]]
             for j in range(C):
                 gradJ[k] += 2.*(ZAk[i, j]/Mi[i]**2 - Mik*Z[i, j]**2/Mi[i]**3)
 
@@ -174,9 +174,9 @@ def aligning_rotation(X, C):
         all_fx.append(fx)
         all_dfx.append(dfx)
 
-    bnds = ((-np.pi/2, np.pi/2),)*K
+    theta_bounds = ((-np.pi/2, np.pi/2),)*K
     opt = optimize.minimize(cost_func, theta_init, arguments, method='L-BFGS-B', jac=True,\
-                            bounds=bnds, options={'disp': True}, callback=store)
+                            bounds=theta_bounds, options={'disp': True}, callback=store)
 
     # get the rotation matrix corresponding to optimized theta
     R = np.eye(C)
