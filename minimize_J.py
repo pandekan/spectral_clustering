@@ -24,7 +24,40 @@ def compute_J(theta, *args):
     # compute cost function J = sum_i sum_j Z_ij **2 /Mi**2
     J = np.sum(np.sum(([Z[i, :] ** 2 / Mi[i] ** 2 for i in range(n)])))
 
-    return Z, J
+    return J
+
+
+def compute_gradJ(theta, *args):
+
+    k_ij = args[0]
+    C = args[1]
+    X = args[2]
+    K = int(C * (C - 1) / 2)
+
+    n = X.shape[0]
+    U = np.eye(C)
+    for k in range(K):
+        G_k = givens_utilities.get_Gk(k, k_ij, theta, C)
+        U = np.dot(U, G_k)
+
+    # rotated matrix Z = XR
+    Z = np.dot(X, U)
+    Mi = np.max(Z, axis=1)
+    mi = np.argmax(Z, axis=1)
+
+    gradJ = np.zeros((K,))
+    for k in range(K):
+        Ak = givens_utilities.get_Ak(X, k_ij, theta, k, C)
+        # pixel-wise multiplication between rotated matrix and gradient matrix
+        ZAk = Z*Ak
+        for i in range(n):
+            Mik = Ak[i,mi[i]]
+            Mi2 = Mi[i]**2
+            Mi3 = Mi[i]**3
+            for j in range(C):
+                gradJ[k] += 2.*(ZAk[i,j]/Mi2 - Mik*Z[i, j]**2/Mi3)
+
+    return gradJ
 
 
 def compute_gradJk(theta, k_in, *args):
@@ -94,7 +127,7 @@ def compute_J_gradJ(theta, *args):
     return J, gradJ
 
 
-def aligning_rotation_CG0(X, C, alpha=0.1, max_iter=1000):
+def aligning_rotation_grad_descent0(X, C, alpha=0.1, max_iter=1000):
     """
     :param X: float, ndarray
     :param C: int
@@ -108,13 +141,11 @@ def aligning_rotation_CG0(X, C, alpha=0.1, max_iter=1000):
     arguments = (k_ij, C, X)
     print k_ij, K
 
-    #alpha = 0.1
     iter = 0
     theta_new = theta.copy()
     Z, J = compute_J(theta, *arguments)
 
-    J_old_1 = J
-    J_old_2 = J
+    J_old = J
 
     while( iter < max_iter):
         iter += 1
@@ -129,19 +160,19 @@ def aligning_rotation_CG0(X, C, alpha=0.1, max_iter=1000):
                 J = J_new
             else:
                 theta_new[k] = theta[k]
-
+        print J, J_old
         if iter > 2:
-            if J - J_new < 1.e-6:
+            if np.abs(J - J_old) < 1.e-10:
+                print J, J_old, J-J_old
                 break
 
-        #    J_old_2 = J_old_1
-        #    J_old_1 = J
+        J_old = J
 
     Z_out, J_out = compute_J(theta_new, *arguments)
 
     return theta_new, Z_out, J_out
 
-def aligning_rotation_CG(X, C, alpha=0.1, max_iter=1000):
+def aligning_rotation_bgd(X, C, alpha=0.1, max_iter=1000):
     """
     :param X: float, ndarray
     :param C: int
@@ -155,37 +186,45 @@ def aligning_rotation_CG(X, C, alpha=0.1, max_iter=1000):
     arguments = (k_ij, C, X)
     print k_ij, K
 
-    #alpha = 0.1
+    fx = []
+    dfx = []
+    params = []
+
     iter = 0
     theta_new = theta.copy()
 
-    J, gradJ = compute_J_gradJ(theta,*arguments)
-    J_old_1 = J
-    J_old_2 = J
+    J, gradJ = compute_J_gradJ(theta, *arguments)
+    J_old = J
 
+    fx = np.append(fx, J)
+    dfx = np.append(dfx, gradJ)
+    params = np.append(params, theta)
     while( iter < max_iter):
         iter += 1
-        for k in range(K):
-            theta_new[k] = theta[k] - alpha*gradJ[k]
-            J_new, gradJ_new = compute_J_gradJ(theta_new,*arguments)
-            print iter, k, J, J_new, gradJ[k], gradJ_new[k], theta[k], theta_new[k]
-            if J_new < J:
-                theta[k] = theta_new[k]
-                J = J_new
-                gradJ = gradJ_new
-            else:
-                theta_new[k] = theta[k]
+        theta_new = theta - alpha*gradJ
+        J_new, gradJ_new = compute_J_gradJ(theta_new, *arguments)
+        fx = np.append(fx, J_new)
+        dfx = np.append(dfx, gradJ_new)
+        params = np.append(params, theta_new)
+        if J_new < J:
+            theta_old = theta
+            theta = theta_new
+            J_old = J
+            J = J_new
+            gradJ = gradJ_new
+            #theta[theta>10.] = theta_old[theta>10.]
+        else:
+            theta_new = theta
 
-        #if iter > 2:
-        #    if J - J_old_2 < 1.e-6:
-        #        break
+        if iter > 2:
+            if abs(J - J_old) < 1.e-10:
+                break
 
-        #    J_old_2 = J_old_1
-        #    J_old_1 = J
+        #print iter, J, J_old, np.average(gradJ)
 
-    Z_out, J_out = compute_J(theta_new, *arguments)
+    J_out = compute_J(theta_new, *arguments)
 
-    return theta_new, Z_out, J_out
+    return fx, dfx, params, theta_new, J_out
 
 
 def aligning_rotation(X, C):
@@ -210,9 +249,11 @@ def aligning_rotation(X, C):
         all_dfx.append(dfx)
 
     theta_bounds = ((-np.pi / 2, np.pi / 2),) * K
-    opt = optimize.minimize(compute_J_gradJ, theta, arguments, method='L-BFGS-B', jac=True, \
-                            bounds=theta_bounds, options={'disp': True}, callback=store)
+    #opt = optimize.minimize(compute_J_gradJ, theta, arguments, method='CG', jac=True, \
+    #                        bounds=theta_bounds, options={'disp': True}, callback=store)
 
+    opt = optimize.minimize(compute_J, theta, arguments, method='CG', jac=None,\
+                            options={'disp': True}, callback=store)
     # get the rotation matrix corresponding to optimized theta
     R = np.eye(C)
     for k in range(K):

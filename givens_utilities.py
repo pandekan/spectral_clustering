@@ -175,9 +175,11 @@ def aligning_rotation(X, C):
         all_dfx.append(dfx)
 
     theta_bounds = ((-np.pi/2, np.pi/2),)*K
-    opt = optimize.minimize(cost_func, theta_init, arguments, method='L-BFGS-B', jac=True,\
-                            bounds=theta_bounds, options={'disp': True}, callback=store)
+    #opt = optimize.minimize(cost_func, theta_init, arguments, method='L-BFGS-B', jac=True,\
+    #                        bounds=theta_bounds, options={'disp': True}, callback=store)
 
+    opt = optimize.minimize(cost_func, theta_init, arguments, method='CG', jac=True, \
+                            options={'disp': True}, callback=store)
     # get the rotation matrix corresponding to optimized theta
     R = np.eye(C)
     for k in range(K):
