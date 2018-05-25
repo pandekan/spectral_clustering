@@ -24,6 +24,8 @@ def get_affinity(data, **kwargs):
     # get nXn distance matrix
     dist_matrix = squareform(pdist(data, metric=metric))
 
+    # if no value for sigma is given, then compute sigma
+    # based on input sigma_ref (default=7)
     sigma_in = None
     sigma_ref = None
     if 'sigma' in keys:
@@ -34,31 +36,23 @@ def get_affinity(data, **kwargs):
     if 'sigma_ref' in keys:
         sigma_ref = kwargs['sigma_ref']
 
-    sigma = np.zeros((n,))
+    scaled_dist = np.zeros_like(dist_matrix)
     if sigma_in is None:
         if sigma_ref is None:
-            sigma_ref = n/2
-        for i in range(n):
-            ind = np.argsort(dist_matrix[i, :])
-            sigma[i] = dist_matrix[i, ind[sigma_ref]]
-            if sigma[i] <= np.finfo(np.float64).eps:
-                sigma[i] = dist_matrix[i, ind[-1]]
-    else:
-        sigma = np.array([sigma_in]*n)
-
-    if n <= 10000:
-        sigma_ij = np.outer(sigma, sigma.transpose())
-        scaled_dist = -dist_matrix*dist_matrix/sigma_ij
-        scaled_dist[np.where(np.isnan(scaled_dist))] = 0.
-        affinity = np.exp(scaled_dist)
-    else:
-        affinity = np.zeros((n, n))
+            sigma_ref = 7
+        sigma_ind = np.argsort(dist_matrix,axis=1)[:,sigma_ref]
+        sigma = np.array([dist_matrix[i, sigma_ind[i]] for i in range(dist_matrix.shape[0])])
         for i in range(n):
             sigma_ij = sigma[i]*sigma[:]
-            scaled_dist = -dist_matrix[i,:]**2/sigma_ij[:]
-            scaled_dist[np.where(np.isnan(scaled_dist))] = 0.
-            affinity[i, :] = np.exp(scaled_dist)
+            scaled_dist[i,:] = -dist_matrix[i,:]**2/sigma_ij[:]
+    else:
+        scaled_dist = -dist_matrix**2/sigma_in**2
 
+    # 0./0
+    scaled_dist[np.where(np.isnan(scaled_dist))] = -10000.
+
+    # affinity = exp(-d**2), and set diagonal elements to 0.
+    affinity = np.exp(scaled_dist)
     for i in range(n):
         affinity[i,i] = 0.
 
