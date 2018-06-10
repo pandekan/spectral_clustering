@@ -29,12 +29,12 @@ def data_to_eig(data, **kwargs):
 def spectral_clustering(eigvec, nclusters):
 
     # matrix of top n eigenvalues
-    X = eigvec[:,-nclusters:]
+    X = eigvec[:, -nclusters:]
 
     # normalize eigenvectors along rows
     Xnorm = np.zeros_like(X)
     for i in range(X.shape[0]):
-        Xnorm[i,:] = X[i,:]/np.sqrt(np.sum(X[i,:]**2))
+        Xnorm[i, :] = X[i, :]/(np.sqrt(np.sum(X[i, :]**2)+np.finfo(np.float32).eps))
 
     kmeans = cluster.KMeans(nclusters)
     cluster_index = kmeans.fit_predict(Xnorm)
