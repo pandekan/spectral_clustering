@@ -3,7 +3,7 @@ import graph_utilities
 import h5py
 import time
 import sys
-import matplotlib.pyplot as plt
+import argparse
 import clustering
 import pyqtgraph as pg
 from functools import partial
@@ -45,44 +45,80 @@ class ZoomScatterItem(pg.ScatterPlotItem):
 	def setImageIndices(self, indices):
 		
 		self.imageindices = indices
-		
-		# self.mousePoint = self.viewBox.mapSceneToView(position)
-		# print(self.mousePoint.toTuple())
+	
+	# self.mousePoint = self.viewBox.mapSceneToView(position)
+	# print(self.mousePoint.toTuple())
 
 
 class PlotEigVectors(pg.ScatterPlotItem):
-	sigShowEig = Signal(int)
+	sigShowImage = Signal(int)
 	
-	def __init__(self, eigvec, nclusters, labels, *args, **kwargs):
+	def __init__(self, eigvec, nclusters, labels, img_index, *args, **kwargs):
 		
 		super(PlotEigVectors, self).__init__(*args, **kwargs)
 		self.eigvec = eigvec
 		self.labels = labels
 		self.nclusters = nclusters
+		self.img_index = img_index
 		self.sigClicked.connect(self.clicked)
 	
-	def plot_eigvec(self, eignum):
+	def plot_eigvec(self, eignum_1, eignum_2=None):
 		
-		eig = self.eigvec[:, -eignum]
-		s = 0
 		all_spots = []
-		
+		all_indices = []
+		s = 0
 		for i in range(self.nclusters):
 			
 			ind = np.where(self.labels == i)
-			# brush color
-			b = np.array([pg.intColor(i, 10)] * np.size(ind))
+			img_ind = self.img_index[ind]
+			b = np.array([pg.intColor(i, self.nclusters)] * np.size(ind))
+			if eignum_2 is None:
+				# plot of single eigen vector vs labels
+				x = np.arange(s, s + np.size(ind))
+				y = self.eigvec[ind, -eignum_1].flatten()
+			else:
+				x = self.eigvec[ind, -eignum_1].flatten()
+				y = self.eigvec[ind, -eignum_2].flatten()
 			
-			y = eig[ind].flatten()
-			x = np.arange(s, s + np.size(ind))
-			spots = [{'x': xi, 'y': yi, 'brush': bi} for xi, yi, bi in zip(x, y, b)]
+			spots = [{'x': xi, 'y': yi, 'data': img_indi, 'brush': bi}
+			         for xi, yi, img_indi, bi in zip(x, y, img_ind, b)]
 			
+			all_indices.append(img_ind)
 			for ii in range(np.size(ind)):
 				all_spots.append(spots[ii])
 			
 			s += np.size(ind)
+		
+		self.setData(all_spots)
+	
+	def scatter_plot_data(self, eignum_1, eignum_2=None):
+		
+		all_spots = []
+		all_indices = []
+		s = 0
+		for i in range(self.nclusters):
 			
-			self.setData(all_spots)
+			ind = np.where(self.labels == i)
+			img_ind = self.img_index[ind]
+			b = np.array([pg.intColor(i, self.nclusters)] * np.size(ind))
+			if eignum_2 is None:
+				# plot of single eigen vector vs labels
+				x = np.arange(s, s + np.size(ind))
+				y = self.eigvec[ind, -eignum_1].flatten()
+			else:
+				x = self.eigvec[ind, -eignum_1].flatten()
+				y = self.eigvec[ind, -eignum_2].flatten()
+			
+			spots = [{'x': xi, 'y': yi, 'data': img_indi, 'brush': bi}
+			         for xi, yi, img_indi, bi in zip(x, y, img_ind, b)]
+			
+			all_indices.append(img_ind)
+			for ii in range(np.size(ind)):
+				all_spots.append(spots[ii])
+			
+			s += np.size(ind)
+		
+		return all_spots, all_indices
 	
 	def clicked(self, _, points):
 		global lastclicked
@@ -91,7 +127,7 @@ class PlotEigVectors(pg.ScatterPlotItem):
 		for point in points:
 			point.setPen('b', width=2)
 			index = point.data()
-			self.sigShowEig.emit(index)
+			self.sigShowImage.emit(index)
 		lastclicked = points
 	
 	def setImageIndices(self, indices):
@@ -131,24 +167,51 @@ class ExportROI(pg.RectROI):
 			
 			fout = h5py.File(str(path[0]), 'w')
 			npatt = np.size(indices)
-			ny, nx = fh['data/cart_data'][indices[0]].shape
-			nq = fh['data/saxs'][indices[0]].shape[0]
-			dset_cart = fout.create_dataset('data/cart_data', (npatt, ny, nx),
-			                                dtype=float)
-			dset_saxs = fout.create_dataset('data/saxs', (npatt, nq), dtype=float)
+			ny, nx = fh[dfield][indices[0]].shape
+			#nq = fh['data/saxs'][indices[0]].shape[0]
+			dset_cart = fout.create_dataset(dfield, (npatt, ny, nx), dtype=float)
+			#dset_saxs = fout.create_dataset('data/saxs', (npatt, nq), dtype=float)
 			
 			for i in range(npatt):
-				dset_cart[i, :, :] = fh['data/cart_data'][indices[i], :, :]
-				dset_saxs[i, :] = fh['data/saxs'][indices[i], :]
-			fout.create_dataset('data/timestamp', data=fh['data/timestamp'][indices])
-			
+				dset_cart[i, :, :] = fh[dfield][indices[i], :, :]
+				#dset_saxs[i, :] = fh['data/saxs'][indices[i], :]
+			fout.create_dataset('data/timestamp', data=fh[tfield][indices])
+			fout.create_dataset('data/mask', data=fh[mfield][()])
 			fout.close()
 	
+	def affinityROI(self, fh, labels, image_ind):
+		
+		ny, nx = 300, 200
+		indices = np.array(sorted(self.export()))
+		#print indices
+		
+		metric = 'euclidean'
+		knn = np.size(indices) - 1
+		mutual = False
+		
+		label_roi = np.empty_like(indices)
+		for i, ii in enumerate(indices):
+			label_roi[i] = labels[np.where(image_ind == ii)][0]
+		
+		label_sorting_index = np.argsort(label_roi)
+		label_sorted_data_ind = indices[label_sorting_index]
+		
+		print(label_sorted_data_ind)
+		print(label_roi[label_sorting_index])
+		
+		d = np.zeros((np.size(indices), ny, nx))
+		for i, ii in enumerate(label_sorted_data_ind):
+			d[i, :, :] = fh[dfield][ii, 400:700, 400:600]
+		spec_graph = graph_utilities.SpectralGraph(d, metric=metric)
+		spec_graph.gaussian_similarity(sigma_ref=7)
+		affinity, _ = spec_graph.knn_graph(knn=knn, mutual=mutual)
+		self.sigSetImage.emit(affinity)
+		
 	def avgROI(self, fh):
 		
 		indices = sorted(self.export())
 		
-		avg = np.average(fh['data/cart_data'][indices, :, :], axis=0)
+		avg = np.average(fh[dfield][indices, :, :], axis=0)
 		self.sigSetImage.emit(avg)
 	
 	def acROI(self, fh):
@@ -172,8 +235,10 @@ class ExportROI(pg.RectROI):
 
 
 def cluster_data_knn(f, **kwargs):
+	
 	# saxs = f['data/saxs']
-	cart_data = f['data/cart_data']
+	cart_data = f[dfield]
+        mask = f[mfield][()]
 	ntotal = cart_data.shape[0]
 	feature = 'cart'
 	
@@ -183,6 +248,11 @@ def cluster_data_knn(f, **kwargs):
 	else:
 		knn = ntotal - 1
 	
+	if 'metric' in keys:
+		metric = kwargs['metric']
+	else:
+		metric = 'euclidean'
+		
 	if 'mutual' in keys:
 		mutual = kwargs['mutual']
 	else:
@@ -205,22 +275,31 @@ def cluster_data_knn(f, **kwargs):
 	
 	print nsamples, nclusters, knn, mutual
 	
-	select_ind = np.arange(2000, 2000 + nsamples)
+	select_ind = np.arange(nsamples)
 	nsamples = select_ind.size
-	
-	t0 = time.time()
+
+	x0,y0 = roi_0[0], roi_0[1]
+        x1,y1 = roi_1[0], roi_1[1]
+        print x0, y0, x1, y1
+	mask_roi = mask[y0:y1, x0:x1]
+        print(mask_roi.shape)
+        mask_ind = np.nonzero(mask_roi.flatten())
+        print('number of unmasked pixels in ROI = %4d' %(np.size(mask_ind)))
+        t0 = time.time()
 	if feature == 'saxs':
 		d = saxs[select_ind, 20:80]
 	else:
-		d = cart_data[select_ind, 400:700, 400:600]
-		d = d / (np.sum(np.sum(d, axis=-1), axis=-1) +
-		         np.finfo(np.float32).eps)[:, None, None]
-	t_load = time.time() - t0
+            d = cart_data[select_ind, y0:y1, x0:x1]
+            print d.shape
+	    #d = d.ravel()[mask_ind]
+            #d = d / (np.sum(np.sum(d, axis=-1), axis=-1) + np.finfo(np.float32).eps)[:, None, None]
+	
+        t_load = time.time() - t0
 	print('data loaded in %4.5f seconds' % t_load)
 	print d.shape
 	
 	# Do clustering
-	spec_graph = graph_utilities.SpectralGraph(d, 'correlation')
+	spec_graph = graph_utilities.SpectralGraph(d, metric=metric)
 	spec_graph.gaussian_similarity(sigma_ref=7)
 	affinity, _ = spec_graph.knn_graph(knn=knn, mutual=mutual)
 	eigval, eigvec = graph_utilities.get_lap_eig(affinity)
@@ -233,10 +312,52 @@ def cluster_data_knn(f, **kwargs):
 	return eigvec, cluster_labels, select_ind
 
 
-def cluster_data(f, **kwargs):
-	# saxs = f['data/saxs']
-	cart_data = f['data/cart_data']
+def affinity_clusters(f, cluster_labels, nclusters, select_ind, **kwargs):
+	
+	cart_data = f[dfield]
 	ntotal = cart_data.shape[0]
+	
+	keys = kwargs.keys()
+	if 'knn' in keys:
+		knn = kwargs['knn']
+	else:
+		knn = ntotal - 1
+	
+	if 'metric' in keys:
+		metric = kwargs['metric']
+	else:
+		metric = 'euclidean'
+	
+	if 'mutual' in keys:
+		mutual = kwargs['mutual']
+	else:
+		mutual = False
+	
+	ny = 300
+	nx = 200
+	d = np.zeros((np.size(cluster_labels), ny, nx))
+	all_labels_sorted = []
+	for i in range(nclusters):
+		ind = select_ind[np.where(cluster_labels == i)]
+		if np.size(ind) > 0:
+			all_labels_sorted = np.append(all_labels_sorted, ind)
+	
+	for i, ii in enumerate(all_labels_sorted):
+		d[i, :, :] = f[dfield][ii,400:700,400:600]
+	
+	spec_graph = graph_utilities.SpectralGraph(d, metric=metric)
+	spec_graph.gaussian_similarity(sigma_ref=7)
+	affinity, _ = spec_graph.knn_graph(knn=knn, mutual=mutual)
+	
+	return affinity
+
+
+def cluster_data(f, **kwargs):
+	
+	# saxs = f['data/saxs']
+	cart_data = f[dfield]
+	mask = f[mfield][()]
+        ntotal = cart_data.shape[0]
 	feature = 'cart'
 	
 	keys = kwargs.keys()
@@ -255,16 +376,23 @@ def cluster_data(f, **kwargs):
 	else:
 		select_ind = np.unique(np.random.randint(0, ntotal, nsamples))
 	
-	select_ind = np.arange(2000, 2000 + nsamples)
+	select_ind = np.arange(nsamples)
 	nsamples = select_ind.size
 	
+        x0,y0 = roi_0[0], roi_0[1]
+        x1,y1 = roi_1[0], roi_1[1]
 	t0 = time.time()
+        mask_roi = mask[y0:y1, x0:x1]
+        mask_ind = np.nonzero(mask_roi) #.flatten())
+        print(np.size(ind))
 	if feature == 'saxs':
 		d = saxs[select_ind, 20:80]
 	else:
-		d = cart_data[select_ind, 400:700, 400:600]
-		d = d / (np.sum(np.sum(d, axis=-1), axis=-1) + np.finfo(np.float32).eps)[:, None,
-		        None]
+            d = cart_data[select_ind, y0:y1, x0:x1]
+            d = d[:,mask_ind]
+            #d = d.ravel()[mask_ind]
+	    #d = d / (np.sum(np.sum(d, axis=-1), axis=-1) + np.finfo(np.float32).eps)[:, None,
+            #		        None]
 	t_load = time.time() - t0
 	print('data loaded in %4.5f seconds' % t_load)
 	print d.shape
@@ -280,16 +408,24 @@ def cluster_data(f, **kwargs):
 
 
 class ClusterPlotWidget(QWidget):
+	sigInd1 = Signal(int)
+	sigInd2 = Signal(int)
+	
 	def __init__(self, *args, **kwargs):
 		super(ClusterPlotWidget, self).__init__(*args, **kwargs)
 		layout = QVBoxLayout()
 		self.setLayout(layout)
+		#self.sigClicked.connect(self.clicked)
 		
 		# Comboboxes
 		hbox = QHBoxLayout()
 		layout.addLayout(hbox)
 		self.index1 = QComboBox()
 		self.index2 = QComboBox()
+		self.index1.addItem('None')
+		self.index2.addItem('None')
+		self.index1.addItems([str(i) for i in range(10)])
+		self.index2.addItems([str(i) for i in range(10)])
 		hbox.addWidget(self.index1)
 		hbox.addWidget(self.index2)
 		
@@ -297,15 +433,89 @@ class ClusterPlotWidget(QWidget):
 		self.plotwidget = pg.PlotWidget()
 		layout.addWidget(self.plotwidget)
 	
+		#self.index1.currentIndexChanged(self.on_selector)
+		
 	def __getattr__(self, attr):  ## implicitly wrap methods from plotItem
 		if hasattr(self.plotwidget.plotItem, attr):
 			m = getattr(self.plotwidget.plotItem, attr)
 			if hasattr(m, '__call__'):
 				return m
 		raise NameError(attr)
+	
+	# def clicked(self):
+	#
+	# 	self.sigInd1.emit(self.index1.currentText())
+	#
+	# def return_ind_1(self, i):
+	#
+	# 	#index = self.index1.itemText(i)
+	# 	return self.index1.currentText()
 
 
 if __name__ == "__main__":
+	
+	parser = argparse.ArgumentParser(description='hit-finding based on spectral clustering')
+	#parser.add_argument('-h', '--help', help='')
+	parser.add_argument('-f', '--fname', help='data filename', required=True)
+	parser.add_argument('-df', '--dfield', help='data field', required=True)
+	parser.add_argument('-mf', '--mfield', help='mask field', required=True)
+	parser.add_argument('-tf', '--tfield', help='timestamp field', required=True)
+	parser.add_argument('-nc', '--nclusters', help='number of clusters', default=5, type=int)
+	parser.add_argument('-ns', '--nsamples', help='number of data points', default=100, type=int)
+	parser.add_argument('-knn', '--neighbors', help='number of nearest neighbors', type=int)
+	parser.add_argument('-m', '--metric', help='metric for distance calculation', default='euclidean', type=str)
+	parser.add_argument('-g', '--graph', help='graph connection', default='fc', type=str)
+        parser.add_argument('-roi','--roi',help='x1,y1,x2,y2 for region of interest',default='300,300,724,724') #,type=int)	
+	args = parser.parse_args()
+	
+	# Get arguments
+	if 'fname' in args:
+		fname = args.fname
+	else:
+		print('no filename given: exiting')
+		sys.exit()
+	
+	if 'dfield' in args:
+		dfield = args.dfield
+	else:
+		print('no data field given: exiting')
+	
+	nclusters = args.nclusters
+	nsamples = args.nsamples
+	knn = args.neighbors
+	graph = args.graph
+	metric = args.metric
+	mfield = args.mfield
+	tfield = args.tfield
+	roi = args.roi
+        roi_0 = int(roi.split(',')[0]), int(roi.split(',')[1])
+        roi_1 = int(roi.split(',')[2]), int(roi.split(',')[3])
+
+        x0, y0 = roi_0[0], roi_0[1]
+        x1, y1 = roi_1[0], roi_1[1]
+
+	print(nclusters, nsamples, knn, graph, metric,roi_0,roi_1)
+
+	# open file containing data
+	f = h5py.File(fname, 'r')
+	d = f[dfield]
+	if nsamples > d.shape[0]:
+		nsamples = d.shape[0]
+	
+	if knn >= nsamples:
+		knn = nsamples - 1
+	
+	if graph == 'fc' or graph == 'fully-connected':
+		mutual = False
+		knn = nsamples - 1
+	elif graph == 'mutual':
+		mutual = True
+	elif graph == 'knn' or graph == 'non-mutual':
+		mutual = False
+	
+	# cluster the data
+	arguments = {'nclusters': nclusters, 'nsamples': nsamples, 'knn': knn, 'mutual': mutual, 'metric': metric}
+	eigvec, cluster_labels, select_ind = cluster_data_knn(f, **arguments)
 	
 	app = QApplication([])
 	mainwindow = QMainWindow()
@@ -321,168 +531,126 @@ if __name__ == "__main__":
 	# Main Menu
 	menubar = QMenuBar()
 	mainwindow.setMenuBar(menubar)
-	exportmenu = menubar.addMenu('&Export')
 	eigmenu = menubar.addMenu('&Eigenvectors')
+	
+	plot00 = ClusterPlotWidget()
+	plot01 = ClusterPlotWidget()
+	plot10 = ClusterPlotWidget()
+	plot11 = ClusterPlotWidget()
+	grid.addWidget(plot00, 0, 0, 1, 1)
+	grid.addWidget(plot01, 0, 1, 1, 1)
+	grid.addWidget(plot10, 1, 0, 1, 1)
+	grid.addWidget(plot11, 1, 1, 1, 1)
 	
 	# Right splitter
 	rightsplitter = QSplitter()
 	rightsplitter.setOrientation(Qt.Vertical)
 	splitter.addWidget(rightsplitter)
-	
-	eigen12 = ClusterPlotWidget()
-	eigen13 = ClusterPlotWidget()
-	eigen23 = ClusterPlotWidget()
-	eigen14 = ClusterPlotWidget()
-	cart_view = pg.ImageView()
-	eig_view = pg.PlotWidget()
-	grid.addWidget(eigen12, 0, 0, 1, 1)
-	grid.addWidget(eigen13, 0, 1, 1, 1)
-	grid.addWidget(eigen23, 1, 0, 1, 1)
-	grid.addWidget(eigen14, 1, 1, 1, 1)
-	rightsplitter.addWidget(cart_view)
-	
-	# Second imageview
-	cart_view2 = pg.ImageView()
-	rightsplitter.addWidget(cart_view2)
-	
+	# first image view
+	img_view_1 = pg.ImageView()
+	rightsplitter.addWidget(img_view_1)
+	# Second image view
+	img_view_2 = pg.ImageView()
+	rightsplitter.addWidget(img_view_2)
 	
 	def showframe(index):
-		cart_view.setImage(f['data/cart_data'][index], autoLevels=False)
+            img_view_1.setImage(f[dfield][index,y0:y1,x0:x1], autoLevels=False)
 	
+	# plot00item = ZoomScatterItem()
+	# plot00item.sigShowCart.connect(showframe)
+	# plot00.addItem(plot00item)
+	#
+	# plot10item = ZoomScatterItem()
+	# plot10item.sigShowCart.connect(showframe)
+	# plot10.addItem(plot10item)
 	
-	eigen12item = ZoomScatterItem()
-	eigen12item.sigShowCart.connect(showframe)
+	plot00item = PlotEigVectors(eigvec, nclusters, cluster_labels, select_ind)
+	plot00item.sigShowImage.connect(showframe)
+	plot00.addItem(plot00item)
+	spots, indices = plot00item.scatter_plot_data(1, 2)
+	plot00item.setData(spots)
+	plot00item.setImageIndices(indices)
 	
-	eigen13item = ZoomScatterItem()
-	eigen13item.sigShowCart.connect(showframe)
+	roi00 = ExportROI(plot00item, (0, 0), (1, 1))
+	plot00.addItem(roi00)
+	roi00.sigSetImage.connect(img_view_2.setImage)
+	roi00.setPos((0., 0.))
+	roi00.setSize((0.01, 0.01))
 	
-	eigen23item = ZoomScatterItem()
-	eigen23item.sigShowCart.connect(showframe)
+	plot01item = PlotEigVectors(eigvec, nclusters, cluster_labels, select_ind)
+	plot01item.sigShowImage.connect(showframe)
+	plot01.addItem(plot01item)
+	spots, indices = plot01item.scatter_plot_data(2, 3)
+	plot01item.setData(spots)
+	plot01item.setImageIndices(indices)
 	
-	eigen14item = ZoomScatterItem()
-	eigen14item.sigShowCart.connect(showframe)
+	plot10item = PlotEigVectors(eigvec, nclusters, cluster_labels, select_ind)
+	plot10item.sigShowImage.connect(showframe)
+	plot10.addItem(plot10item)
+	spots, indices = plot01item.scatter_plot_data(2, 4)
+	plot10item.setData(spots)
+	plot10item.setImageIndices(indices)
 	
-	eigen12.addItem(eigen12item)
-	eigen13.addItem(eigen13item)
-	eigen23.addItem(eigen23item)
-	eigen14.addItem(eigen14item)
+	plot11item = PlotEigVectors(eigvec, nclusters, cluster_labels, select_ind)
+	plot11item.sigShowImage.connect(showframe)
+	plot11.addItem(plot11item)
+	spots, indices = plot01item.scatter_plot_data(2, 4)
+	plot11item.setData(spots)
+	plot11item.setImageIndices(indices)
 	
-	roi12 = ExportROI(eigen12item, (0, 0), (1, 1))
-	eigen12.addItem(roi12)
-	roi12.sigSetImage.connect(cart_view.setImage)
+	roi01 = ExportROI(plot01item, (0, 1), (1, 1))
+	plot01.addItem(roi01)
+	roi01.sigSetImage.connect(img_view_2.setImage)
+	roi01.setPos((0., 0.))
+	roi01.setSize((0.1, 0.1))
 	
-	roi13 = ExportROI(eigen13item, (0, 1), (1, 1))
-	eigen13.addItem(roi13)
+	roi10 = ExportROI(plot10item, (1, 0), (1, 1))
+	plot10.addItem(roi10)
+	roi10.sigSetImage.connect(img_view_2.setImage)
+	roi10.setPos((0., 0.))
+	roi10.setSize((0.1, 0.1))
 	
-	roi23 = ExportROI(eigen23item, (1, 0), (1, 1))
-	eigen23.addItem(roi23)
-	
-	roi14 = ExportROI(eigen14item, (1, 1), (1, 1))
-	eigen14.addItem(roi14)
-	
-	# Get arguments
-	fname = sys.argv[1]
-	nclusters = int(sys.argv[2])
-	nsamples = int(sys.argv[3])
-	knn = int(sys.argv[4])
-	mutual = bool(int(sys.argv[5]))
-	
-	f = h5py.File(fname, 'r')
+	roi11 = ExportROI(plot11item, (1, 0), (1, 1))
+	plot11.addItem(roi11)
+	roi11.sigSetImage.connect(img_view_2.setImage)
+	roi11.setPos((0., 0.))
+	roi11.setSize((0.1, 0.1))
 	
 	# ROI Menu bindings
-	exportmenu.addAction('&Average', partial(roi12.avgROI, f))
-	exportmenu.addAction('&Export Hits', partial(roi12.saveROI, f))
+	exportmenu00 = menubar.addMenu('&Export00')
+	exportmenu00.addAction('&Average', partial(roi00.avgROI, f))
+	exportmenu00.addAction('&Export Hits', partial(roi00.saveROI, f))
+	exportmenu00.addAction('&Affinity', partial(roi00.affinityROI, f, cluster_labels, \
+	                                            select_ind))
+
+	exportmenu01 = menubar.addMenu('&Export01')
+	exportmenu01.addAction('&Average', partial(roi01.avgROI, f))
+	exportmenu01.addAction('&Export Hits', partial(roi01.saveROI, f))
+	exportmenu01.addAction('&Affinity', partial(roi01.affinityROI, f, cluster_labels, \
+	                                            select_ind))
 	
-	arguments = {'nclusters': nclusters, 'nsamples': nsamples, 'knn': knn,
-	             'mutual': mutual}
-	eigvec, cluster_labels, select_ind = cluster_data_knn(f, **arguments)
-	# eigvec, cluster_labels, select_ind = cluster_data(f, **arguments)
-	color = iter(plt.cm.hsv(np.linspace(0, 1, nclusters)))
+	exportmenu10 = menubar.addMenu('&Export10')
+	exportmenu10.addAction('&Average', partial(roi10.avgROI, f))
+	exportmenu10.addAction('&Export Hits', partial(roi10.saveROI, f))
+	exportmenu10.addAction('&Affinity', partial(roi10.affinityROI, f, cluster_labels, \
+	                                            select_ind))
 	
-	all_spots12 = []
-	all_spots13 = []
-	all_spots23 = []
-	all_spots14 = []
-	all_img_ind = []
+	exportmenu11 = menubar.addMenu('&Export11')
+	exportmenu11.addAction('&Average', partial(roi11.avgROI, f))
+	exportmenu11.addAction('&Export Hits', partial(roi11.saveROI, f))
+	exportmenu11.addAction('&Affinity', partial(roi11.affinityROI, f, cluster_labels, \
+	                                            select_ind))
 	
-	for i in range(nclusters):
-		c = color.next()
-		ind = np.where(cluster_labels == i)
-		img_ind = select_ind[ind]
-		
-		# brush color
-		b = np.array([pg.intColor(i, 10)] * np.size(ind))
-		print i, np.size(ind)
-		
-		x = eigvec[ind, -1].flatten()
-		y = eigvec[ind, -2].flatten()
-		spots12 = [{'x': xi, 'y': yi, 'data': img_indi, 'brush': bi} \
-		           for xi, yi, img_indi, bi in zip(x, y, img_ind, b)]
-		
-		roi12.setPos((x.min(), y.min()))
-		roi12.setSize(((x.max() - x.min()) / 10., (y.max() - y.min()) / 10.))
-		
-		x = eigvec[ind, -1].flatten()
-		y = eigvec[ind, -3].flatten()
-		spots13 = [{'x': xi, 'y': yi, 'data': img_indi, 'brush': bi} \
-		           for xi, yi, img_indi, bi in zip(x, y, img_ind, b)]
-		
-		roi13.setPos((x.min(), y.min()))
-		roi13.setSize(((x.max() - x.min()) / 10., (y.max() - y.min()) / 10.))
-		
-		x = eigvec[ind, -2].flatten()
-		y = eigvec[ind, -3].flatten()
-		spots23 = [{'x': xi, 'y': yi, 'data': img_indi, 'brush': bi} \
-		           for xi, yi, img_indi, bi in zip(x, y, img_ind, b)]
-		
-		roi23.setPos((x.min(), y.min()))
-		roi23.setSize(((x.max() - x.min()) / 10., (y.max() - y.min()) / 10.))
-		
-		x = eigvec[ind, -1].flatten()
-		y = eigvec[ind, -4].flatten()
-		spots14 = [{'x': xi, 'y': yi, 'data': img_indi, 'brush': bi} \
-		           for xi, yi, img_indi, bi in zip(x, y, img_ind, b)]
-		
-		roi14.setPos((x.min(), y.min()))
-		roi14.setSize(((x.max() - x.min()) / 10., (y.max() - y.min()) / 10.))
-		
-		all_img_ind.append(img_ind)
-		for ii in range(np.size(ind)):
-			all_spots12.append(spots12[ii])
-			all_spots13.append(spots13[ii])
-			all_spots23.append(spots23[ii])
-			all_spots14.append(spots14[ii])
-	
-	eigen12item.setData(all_spots12)
-	eigen12item.setImageIndices(all_img_ind)
-	
-	# eigen13item.setData(all_spots13)
-	# eigen13item.setImageIndices(all_img_ind)
-	
-	eigen23item.setData(all_spots23)
-	eigen23item.setImageIndices(all_img_ind)
-	
-	eigen14item.setData(all_spots14)
-	eigen14item.setImageIndices(all_img_ind)
-	
-	# eigen13item = ZoomScatterItem()
-	
-	ploteig = PlotEigVectors(eigvec, nclusters, cluster_labels)
-	# ploteig.sigShowEig.connect(showFrame)
-	# ploteig.addItem()
-	# eigen13item.sigShowEig.connect(showframe)
-	eigen13.addItem(ploteig)
-	
-	eigmenu.addAction('&Eig1', partial(ploteig.plot_eigvec, 1))
-	eigmenu.addAction('&Eig2', partial(ploteig.plot_eigvec, 2))
-	eigmenu.addAction('&Eig3', partial(ploteig.plot_eigvec, 3))
-	eigmenu.addAction('&Eig4', partial(ploteig.plot_eigvec, 4))
-	eigmenu.addAction('&Eig5', partial(ploteig.plot_eigvec, 5))
-	eigmenu.addAction('&Eig6', partial(ploteig.plot_eigvec, 6))
-	eigmenu.addAction('&Eig7', partial(ploteig.plot_eigvec, 7))
-	eigmenu.addAction('&Eig8', partial(ploteig.plot_eigvec, 8))
-	eigmenu.addAction('&Eig9', partial(ploteig.plot_eigvec, 9))
-	eigmenu.addAction('&Eig10', partial(ploteig.plot_eigvec, 10))
+	eigmenu.addAction('&Eig1', partial(plot11item.plot_eigvec, 1))
+	eigmenu.addAction('&Eig2', partial(plot11item.plot_eigvec, 2))
+	eigmenu.addAction('&Eig3', partial(plot11item.plot_eigvec, 3))
+	eigmenu.addAction('&Eig4', partial(plot11item.plot_eigvec, 4))
+	eigmenu.addAction('&Eig5', partial(plot11item.plot_eigvec, 5))
+	eigmenu.addAction('&Eig6', partial(plot11item.plot_eigvec, 6))
+	eigmenu.addAction('&Eig7', partial(plot11item.plot_eigvec, 7))
+	eigmenu.addAction('&Eig8', partial(plot11item.plot_eigvec, 8))
+	eigmenu.addAction('&Eig9', partial(plot11item.plot_eigvec, 9))
+	eigmenu.addAction('&Eig10', partial(plot11item.plot_eigvec, 10))
 	
 	mainwindow.show()
 	

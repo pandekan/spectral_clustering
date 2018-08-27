@@ -50,10 +50,6 @@ class SpectralGraph:
 		
 		# similarity = exp(-d**2), and set diagonal elements to 0.
 		self.similarity = np.exp(scaled_dist)
-		
-		# make the similarity matrix symmetric, and set diagonal elements to 0.
-		self.similarity = np.tril(self.similarity, k=-1)
-		self.similarity += self.similarity.transpose()
 	
 	def knn_graph(self, knn, mutual=False):
 		
@@ -62,18 +58,21 @@ class SpectralGraph:
 		adjacency = np.zeros_like(self.similarity)
 		degree = np.zeros_like(self.similarity)
 		
-		for i in range(self.nsamples):
-			
-			ind = np.argsort(self.dist[i, :])
-			if not mutual:
-				adjacency[i, ind[1:knn+1]] = self.similarity[i, ind[1:knn+1]]
-				adjacency[ind[1:knn+1], i] = self.similarity[ind[1:knn+1], i]
-			else:
-				for j in ind[1:knn+1]:
-					indp = np.argsort(self.dist[j, :])
-					if i in indp[1:knn+1]:
-						adjacency[i, j] = self.similarity[i, j]
-						adjacency[j, i] = self.similarity[j, i]
+		if not mutual and knn > int(0.75*self.nsamples):
+			adjacency = self.similarity
+		else:
+			for i in range(self.nsamples):
+				
+				ind = np.argsort(self.dist[i, :])
+				if not mutual:
+					adjacency[i, ind[1:knn+1]] = self.similarity[i, ind[1:knn+1]]
+					adjacency[ind[1:knn+1], i] = self.similarity[ind[1:knn+1], i]
+				else:
+					for j in ind[1:knn+1]:
+						indp = np.argsort(self.dist[j, :])
+						if i in indp[1:knn+1]:
+							adjacency[i, j] = self.similarity[i, j]
+							adjacency[j, i] = self.similarity[j, i]
 		
 		for i in range(self.nsamples):
 			degree[i, i] = np.sum(adjacency[i, :])
@@ -86,20 +85,22 @@ class SpectralGraph:
 		
 		adjacency = np.zeros_like(self.similarity)
 		degree = np.zeros_like(self.similarity)
-		
-		neighbors = NearestNeighbors(knn, metric=self.metric, algorithm='brute',\
-		                             njobs=-1).fit(self.data)
-		neigh_graph = neighbors.kneighbors_graph(self.data,mode='connectivity').toarray()
-		
-		if mutual:
-			for i in range(self.nsamples):
-				for j in range(self.nsamples):
-					if neigh_graph[i, j] * neigh_graph[j, i] > 0.:
-						adjacency[i, j] = self.similarity[i, j]
-						adjacency[j, i] = self.similarity[j, i]
+		if not mutual and knn > int(0.75*self.nsamples):
+			adjacency = self.similarity
 		else:
-			for i in range(self.nsamples):
-				adjacency[i, :] = self.similarity[i, :] * neigh_graph[i, :]
+			neighbors = NearestNeighbors(knn, metric=self.metric, algorithm='brute',\
+			                             njobs=-1).fit(self.data)
+			neigh_graph = neighbors.kneighbors_graph(self.data, mode='connectivity').toarray()
+			
+			if mutual:
+				for i in range(self.nsamples):
+					for j in range(self.nsamples):
+						if neigh_graph[i, j] * neigh_graph[j, i] > 0.:
+							adjacency[i, j] = self.similarity[i, j]
+							adjacency[j, i] = self.similarity[j, i]
+			else:
+				for i in range(self.nsamples):
+					adjacency[i, :] = self.similarity[i, :] * neigh_graph[i, :]
 		
 		for i in range(self.nsamples):
 			degree[i, i] = np.sum(adjacency[i, :])
@@ -111,7 +112,7 @@ def get_affinity(data, **kwargs):
 
 	keys = kwargs.keys()
 
-	allowed_metrics = ['euclidean', 'cosine', 'correlation']
+	allowed_metrics = ['euclidean', 'cosine', 'correlation', 'mahalanobis']
 	if 'metric' in keys:
 		metric = kwargs['metric']
 	else:
